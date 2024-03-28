@@ -10,7 +10,7 @@ converge-soe is a python package that implements the shared operating envelope (
 1. Make sure the `ipopt` executable is on your path.
 1. Install the converge-soe package 
 ```
-pip3 install -e .
+pip install -e .
 ```
 
 ## Use
