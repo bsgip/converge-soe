@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "converge_soe"
+version = "0.0.1"
+dependencies = [
+    'numpy>=1.26.4',
+    'pandas>=2.2.1',
+    'pyomo>=6.7.1'
+]
