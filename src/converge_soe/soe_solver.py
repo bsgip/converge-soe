@@ -38,7 +38,6 @@ class SoeSolver:
     def __init__(self, netw_ejson: dict, df_forecasts: pd.DataFrame, df_offers: pd.DataFrame,
                  envelope_abs_max=50.0, solver_options: dict = {}):
         self.netw_ejson = netw_ejson
-        self.netw_ejson["components"] = dict(sorted(self.netw_ejson["components"].items()))  # For reprod/testing
         self.df_forecasts = df_forecasts
         self.df_offers = df_offers
         self.envelope_abs_max = envelope_abs_max
@@ -68,7 +67,7 @@ class SoeSolver:
 
     def _filter_input_data(self):
         loads = _netw_components(self.netw_ejson, "Load")
-        self.netw_load_ids_set = set(x[0] for x in loads)
+        self.netw_load_ids_set = set(x["id"] for x in loads)
 
         self.forecast_load_ids = sorted(set.intersection(self.netw_load_ids_set, set(self.df_forecasts.index)))
         self.df_forecasts_filt = self.df_forecasts.reindex(self.forecast_load_ids)
@@ -77,22 +76,17 @@ class SoeSolver:
         self.df_offers_filt = self.df_offers.reindex(self.offer_load_ids)
 
     def _build_network_data(self):
-        v_units = self.netw_ejson["units"]["voltage"]
-        i_units = self.netw_ejson["units"]["current"]
-        s_units = self.netw_ejson["units"]["power"]
-        z_units = self.netw_ejson["units"]["impedance"]
-
-        ej_infeeders = {cid: (ctp, cd) for cid, ctp, cd in _netw_components(self.netw_ejson, "Infeeder")}
-        ej_nodes = {cid: (ctp, cd) for cid, ctp, cd in _netw_components(self.netw_ejson, "Node")}
-        ej_lines = {cid: (ctp, cd) for cid, ctp, cd in _netw_components(self.netw_ejson, "Line")}
-        ej_txs = {cid: (ctp, cd) for cid, ctp, cd in _netw_components(self.netw_ejson, "Transformer")}
-        ej_loads = {cid: (ctp, cd) for cid, ctp, cd in _netw_components(self.netw_ejson, "Load")}
+        ej_nodes = {x["id"]: x for x in _netw_components(self.netw_ejson, "Node")}
+        ej_infeeders = list(_netw_components(self.netw_ejson, "Infeeder"))
+        ej_lines = list(_netw_components(self.netw_ejson, "Line"))
+        ej_txs = list(_netw_components(self.netw_ejson, "Transformer"))
+        ej_loads = list(_netw_components(self.netw_ejson, "Load"))
 
         def add_i(df):
             df["i"] = list(range(len(df)))
 
         buses_list = []
-        for cid, (_, cd) in ej_nodes.items():
+        for (cid, cd) in ej_nodes.items():
             try:
                 v_mag_min_pu = cd["user_data"]["v_min"] / cd["v_base"]
             except KeyError:
@@ -106,7 +100,7 @@ class SoeSolver:
             buses_list.append(
                 {
                     "id": cid,
-                    "v_base_v": cd["v_base"] * v_units,
+                    "v_base_v": cd["v_base"],
                     "v_mag_min_pu": v_mag_min_pu,
                     "v_mag_max_pu": v_mag_max_pu,
                     "v_mag_setpoint_pu": np.nan,
@@ -116,17 +110,17 @@ class SoeSolver:
         self.buses = pd.DataFrame.from_records(buses_list).set_index("id")
         add_i(self.buses)
 
-        for cid, (_, cd) in ej_infeeders.items():
+        for cd in ej_infeeders:
             nd_id = cd["cons"][0]["node"]
-            _, nd_dict = ej_nodes[nd_id]
-            self.buses.loc[nd_id, "v_mag_setpoint_pu"] = cd["v_setpoint"] / nd_dict["v_base"]
+            nd_cd = ej_nodes[nd_id]
+            self.buses.loc[nd_id, "v_mag_setpoint_pu"] = cd["v_setpoint"] / nd_cd["v_base"]
 
         loads_list = []
-        for cid, (_, cd) in ej_loads.items():
+        for cd in ej_loads:
             nd_id = cd["cons"][0]["node"]
             loads_list.append(
                 {
-                    "load_id": cid,
+                    "load_id": cd["id"],
                     "bus_id": nd_id,
                 }
             )
@@ -138,22 +132,22 @@ class SoeSolver:
 
         branches_list = []
 
-        for cid, (_, cd) in ej_lines.items():
+        for cd in ej_lines:
             nd_id_0 = cd["cons"][0]["node"]
             nd_id_1 = cd["cons"][1]["node"]
             length = cd["length"]
-            z_ohm = cd["z"] * z_units
-            z0_ohm = cd["z0"] * z_units
+            z_ohm = cd["z"]
+            z0_ohm = cd["z0"]
             branches_list.append(
                 {
-                    "id": cid,
+                    "id": cd["id"],
                     "from_bus_id": nd_id_0,
                     "to_bus_id": nd_id_1,
                     "r_ohm": z_ohm[0] * length,
                     "x_ohm": z_ohm[1] * length,
                     "r0_ohm": z0_ohm[0] * length,
                     "x0_ohm": z0_ohm[1] * length,
-                    "i_max_a": cd["i_max"] * i_units if "i_max" in cd else 100000.0,  # From old vers: 100 kA
+                    "i_max_a": cd["i_max"] if "i_max" in cd else 100000.0,  # From old vers: 100 kA
                     "transformer_bus_id": None,
                     # transformer_bus_id is just to_bus for transformers, but keep this for clarity / to make things
                     # more similar to previous code.
@@ -162,14 +156,14 @@ class SoeSolver:
             )
 
         self.transformer_buses = set()
-        for cid, (_, cd) in ej_txs.items():
+        for cd in ej_txs:
             nd_id_0 = cd["cons"][0]["node"]
             nd_id_1 = cd["cons"][1]["node"]
             self.transformer_buses.add(nd_id_1)
-            z_ohm = cd["z"] * z_units
-            z0_ohm = cd["z"] * z_units
-            s_max_w = cd["s_max"] * s_units if "s_max" in cd else 1e9  # Default to large!
-            i_max_a = s_max_w / (cd["v_winding_base"][1] * v_units)  # Max secondary current
+            z_ohm = cd["z_s"]
+            z0_ohm = cd["z_s"]
+            s_max_w = cd["s_max"] if "s_max" in cd else 1e9  # Default to large!
+            i_max_a = s_max_w / (cd["v_winding_base"][1])  # Max secondary current
 
             nom_tr = cd['nom_turns_ratio'][0]
             off_nom_tr = \
@@ -181,19 +175,19 @@ class SoeSolver:
             assert vg[0] == vg[1]
             vr = tr
 
-            nd_0 = ej_nodes[nd_id_0][1]
-            nd_1 = ej_nodes[nd_id_1][1]
+            nd_0 = ej_nodes[nd_id_0]
+            nd_1 = ej_nodes[nd_id_1]
 
             vr_pu = vr * nd_1['v_base'] / nd_0['v_base']
 
             branches_list.append(
                 {
-                    "id": cid,
+                    "id": cd["id"],
                     "from_bus_id": nd_id_0,
                     "to_bus_id": nd_id_1,
                     "transformer_bus_id": nd_id_1,  # Repeated, but leave for clarity wrt older code.
-                    "r_ohm": z_ohm[1][0],  # TODO: Properly determine impedance side etc.
-                    "x_ohm": z_ohm[1][1],  # TODO: Properly determine impedance side etc.
+                    "r_ohm": z_ohm[0],  # TODO: Properly determine impedance side etc.
+                    "x_ohm": z_ohm[1],  # TODO: Properly determine impedance side etc.
                     "r0_ohm": 0.0,
                     "x0_ohm": 0.0,
                     "i_max_a": i_max_a,
@@ -618,8 +612,7 @@ def solve_soes(netw_ejson, df_forecasts_t, df_offers_t, solver_options={}):
 
 
 def _netw_components(netw_ejson, comp_type=None):
-    comps = ((k1, k2, v2) for k1, v1 in netw_ejson["components"].items() for k2, v2 in v1.items())
     if comp_type is None:
-        return list(comps)
+        return iter(netw_ejson["components"])
     else:
-        return [x for x in comps if x[1] == comp_type]
+        return (x for x in netw_ejson["components"] if x["type"] == comp_type)
